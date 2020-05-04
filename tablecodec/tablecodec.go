@@ -43,6 +43,7 @@ const (
 	RecordRowKeyLen       = prefixLen + idLen /*handle*/
 	tablePrefixLength     = 1
 	recordPrefixSepLength = 2
+	indexPrefixLength     = 2
 )
 
 // TableSplitKeyLen is the length of key 't{table_id}' which is used for table split.
@@ -86,7 +87,7 @@ func DecodeRecordKey(key kv.Key) (tableID int64, handle int64, err error) {
 		return 0, 0, err
 	}
 
-	// 判断是否有分割下划线和rowprefix字符'_r"
+	// 判断是否有分割下划线和recordprefixsep字符'_r"
 	if !key.HasPrefix(recordPrefixSep) {
 		return 0, 0, errInvalidKey.GenWithStack("invalid key - %v", key)
 	}
@@ -101,24 +102,46 @@ func DecodeRecordKey(key kv.Key) (tableID int64, handle int64, err error) {
 
 // appendTableIndexPrefix appends table index prefix  "t[tableID]_i".
 func appendTableIndexPrefix(buf []byte, tableID int64) []byte {
-	buf = append(buf, tablePrefix...)
-	buf = codec.EncodeInt(buf, tableID)
-	buf = append(buf, indexPrefixSep...)
+	buf = append(buf, tablePrefix...)    // buf =[]byte{'t'}
+	buf = codec.EncodeInt(buf, tableID)  // buf = []byte{'t',8,0,0,0,0,0,0,1}
+	buf = append(buf, indexPrefixSep...) // buf = []byte{'t',8,0,0,0,0,0,0,1,'_','i'}
 	return buf
 }
 
 // EncodeIndexSeekKey encodes an index value to kv.Key.
 func EncodeIndexSeekKey(tableID int64, idxID int64, encodedValue []byte) kv.Key {
-	key := make([]byte, 0, prefixLen+len(encodedValue))
-	key = appendTableIndexPrefix(key, tableID)
-	key = codec.EncodeInt(key, idxID)
-	key = append(key, encodedValue...)
+	key := make([]byte, 0, prefixLen+len(encodedValue)) // key 的cap为 11 + len(encodedValue)
+	key = appendTableIndexPrefix(key, tableID)          // 执行后 key = []byte{'t',8,0,0,0,0,0,0,1,'_','i'}
+	key = codec.EncodeInt(key, idxID)                   // 执行后 key = []byte{'t',8,0,0,0,0,0,0,1,'_','i',8,0,0,0,0,0,0,2}
+	// 因为对于唯一索引，key的规则为tablePrefix{tableID}_indexPrefixSep{indexID}_indexedColumnsValue，因此需要将被索引的列的值也编入key
+	key = append(key, encodedValue...) // encodedValue为通过 codec.EncodeKey得到的编码后的value，codec.encode“保证编码前和编码后的比较关系不变”从而保证key有序
 	return key
 }
 
 // DecodeIndexKeyPrefix decodes the key and gets the tableID, indexID, indexValues.
 func DecodeIndexKeyPrefix(key kv.Key) (tableID int64, indexID int64, indexValues []byte, err error) {
 	/* Your code here */
+	// 判断是否有tableprefix字符't'
+	if !key.HasPrefix(tablePrefix) {
+		return 0, 0, nil, errInvalidKey.GenWithStack("invalid key - %v", key)
+	}
+	key = key[tablePrefixLength:]
+	key, tableID, err = codec.DecodeInt(key)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	// 判断是否有下划线和indexprefixsep字符'_i"
+	if !key.HasPrefix(indexPrefixSep) {
+		return 0, 0, nil, errInvalidKey.GenWithStack("invalid key - %v", key)
+	}
+	// 对indexID的编码进行decode
+	key = key[indexPrefixLength:]
+	key, indexID, err = codec.DecodeInt(key)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	// 对indexID进行decode后key中剩余的即为编码后的indexvalue部分
+	indexValues = key[:]
 	return tableID, indexID, indexValues, nil
 }
 

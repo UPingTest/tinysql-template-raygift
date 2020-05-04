@@ -102,7 +102,6 @@ func (s *testTableCodecSuite) TestIndexKey(c *C) {
 	tableID := int64(4)
 	indexID := int64(5)
 	indexKey := EncodeIndexSeekKey(tableID, indexID, []byte{})
-	c.Error(indexKey)
 	tTableID, tIndexID, isRecordKey, err := DecodeKeyHead(indexKey)
 	c.Assert(err, IsNil)
 	c.Assert(tTableID, Equals, tableID)
