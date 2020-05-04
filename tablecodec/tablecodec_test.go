@@ -47,6 +47,7 @@ func (s *testTableCodecSuite) TestTableCodec(c *C) {
 	c.Assert(h, Equals, int64(2))
 
 	key = EncodeRowKeyWithHandle(1, 2)
+	// c.Errorf("Type: %T Value: %v\n", key, key)
 	h, err = DecodeRowKey(key)
 	c.Assert(err, IsNil)
 	c.Assert(h, Equals, int64(2))
