@@ -20,8 +20,6 @@ import (
 	"github.com/pingcap/errors"
 )
 
-// 通过将 tableid 和 handle 与0x8000000000000000 做异或，实现存储int64转为uint64后，符号位为1的负数最高位变为0，符号位为0的正数最高位变为1
-// 此时可保证正数总比负数大，即“保证编码前和编码后的比较关系不变”（“Memcomparable“）
 const signMask uint64 = 0x8000000000000000
 
 // EncodeIntToCmpUint make int v to comparable uint type
