@@ -15,6 +15,8 @@ package ddl
 
 import (
 	"fmt"
+	"sync/atomic"
+
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/infoschema"
@@ -26,7 +28,6 @@ import (
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/pingcap/tidb/util/sqlexec"
 	"go.uber.org/zap"
-	"sync/atomic"
 )
 
 // adjustColumnInfoInAddColumn is used to set the correct position of column info when adding column.
@@ -110,7 +111,7 @@ func createColumnInfo(tblInfo *model.TableInfo, colInfo *model.ColumnInfo) (*mod
 
 func checkAddColumn(t *meta.Meta, job *model.Job) (*model.TableInfo, *model.ColumnInfo, *model.ColumnInfo, int, error) {
 	schemaID := job.SchemaID
-	tblInfo, err := getTableInfoAndCancelFaultJob(t, job, schemaID)
+	tblInfo, err := getTableInfoAndCancelFaultJob(t, job, schemaID) //通过 job 中 schemaID 和 tableID 获取 tableInfo
 	if err != nil {
 		return nil, nil, nil, 0, errors.Trace(err)
 	}
@@ -149,12 +150,12 @@ func onAddColumn(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, err error)
 		}
 	})
 
-	tblInfo, columnInfo, col, offset, err := checkAddColumn(t, job)
+	tblInfo, columnInfo, col, offset, err := checkAddColumn(t, job) // 获取tableInfo ，要新添加的column存在情况，以及table所有columnInfo
 	if err != nil {
 		return ver, errors.Trace(err)
 	}
-	if columnInfo == nil {
-		columnInfo, offset, err = createColumnInfo(tblInfo, col)
+	if columnInfo == nil { // 如果新添加的 column 在原先表中不存在
+		columnInfo, offset, err = createColumnInfo(tblInfo, col) //
 		if err != nil {
 			job.State = model.JobStateCancelled
 			return ver, errors.Trace(err)
@@ -207,7 +208,7 @@ func onAddColumn(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, err error)
 }
 
 func onDropColumn(t *meta.Meta, job *model.Job) (ver int64, _ error) {
-	tblInfo, colInfo, err := checkDropColumn(t, job)
+	tblInfo, colInfo, err := checkDropColumn(t, job) // Check table 是否存在，要 drop 的 column 是否存在等
 	if err != nil {
 		return ver, errors.Trace(err)
 	}
@@ -217,9 +218,12 @@ func onDropColumn(t *meta.Meta, job *model.Job) (ver int64, _ error) {
 	//       You'll need to find the right place where to put the function `adjustColumnInfoInDropColumn`.
 	//       Also you'll need to take a corner case about the default value.
 	//       (Think about how the not null property and default value will influence the `Drop Column` operation.
+	// drop Column 只要修改 table 的元信息，把 table 元信息中对应的要删除的 column 删除。
+	// drop Column 不会删除原有 table 数据行中的对应的 Column 数据，在 decode 一行数据时，会根据 table 的元信息来 decode
 	switch colInfo.State {
 	case model.StatePublic:
 		// To be filled
+		// adjustColumnInfoInDropColumn(tblInfo, offset)
 		ver, err = updateVersionAndTableInfoWithCheck(t, job, tblInfo, originalState != colInfo.State)
 	case model.StateWriteOnly:
 		// To be filled
