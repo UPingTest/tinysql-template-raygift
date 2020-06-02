@@ -67,7 +67,7 @@ func adjustColumnInfoInDropColumn(tblInfo *model.TableInfo, offset int) {
 	oldCols := tblInfo.Columns
 	// Adjust column offset.
 	offsetChanged := make(map[int]int)
-	for i := offset + 1; i < len(oldCols); i++ {
+	for i := offset + 1; i < len(oldCols); i++ { // 调整将被删除的column后所有column的offset
 		offsetChanged[oldCols[i].Offset] = i - 1
 		oldCols[i].Offset = i - 1
 	}
@@ -85,7 +85,7 @@ func adjustColumnInfoInDropColumn(tblInfo *model.TableInfo, offset int) {
 	newCols := make([]*model.ColumnInfo, 0, len(oldCols))
 	newCols = append(newCols, oldCols[:offset]...)
 	newCols = append(newCols, oldCols[offset+1:]...)
-	newCols = append(newCols, oldCols[offset])
+	newCols = append(newCols, oldCols[offset]) // oldCols[offset]为要删除的column，被安排到newCols的最后
 	tblInfo.Columns = newCols
 }
 
@@ -157,12 +157,12 @@ func onAddColumn(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, err error)
 	if columnInfo == nil { // 如果新添加的 column 在原先表中不存在
 		columnInfo, offset, err = createColumnInfo(tblInfo, col) //
 		if err != nil {
-			job.State = model.JobStateCancelled
+			job.State = model.JobStateCancelled //前面两个步骤中发生某些情况会将此 job 标记为 cancel 状态
 			return ver, errors.Trace(err)
 		}
 		logutil.BgLogger().Info("[ddl] run add column job", zap.String("job", job.String()), zap.Reflect("columnInfo", *columnInfo), zap.Int("offset", offset))
 		// Set offset arg to job.
-		if offset != 0 {
+		if offset != 0 { // offset的作用？
 			job.Args = []interface{}{columnInfo, offset}
 		}
 		if err = checkAddColumnTooManyColumns(len(tblInfo.Columns)); err != nil {
@@ -175,11 +175,14 @@ func onAddColumn(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, err error)
 	switch columnInfo.State {
 	case model.StateNone:
 		// none -> delete only
+		// 将 job 的 schema 状态和 table 中 column 状态标记为 delete only
+		// 更新 table info 到 KV 层
 		job.SchemaState = model.StateDeleteOnly
 		columnInfo.State = model.StateDeleteOnly
 		ver, err = updateVersionAndTableInfoWithCheck(t, job, tblInfo, originalState != columnInfo.State)
 	case model.StateDeleteOnly:
 		// delete only -> write only
+		// 进入delete only状态后列只允许删除
 		job.SchemaState = model.StateWriteOnly
 		columnInfo.State = model.StateWriteOnly
 		ver, err = updateVersionAndTableInfo(t, job, tblInfo, originalState != columnInfo.State)
@@ -190,6 +193,7 @@ func onAddColumn(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, err error)
 		ver, err = updateVersionAndTableInfo(t, job, tblInfo, originalState != columnInfo.State)
 	case model.StateWriteReorganization:
 		// reorganization -> public
+		// 此时没有处于delete only状态的节点，节点或者处于write only，或者下线，此时可执行添加列的操作
 		// Adjust table column offset.
 		adjustColumnInfoInAddColumn(tblInfo, offset)
 		columnInfo.State = model.StatePublic
@@ -218,22 +222,34 @@ func onDropColumn(t *meta.Meta, job *model.Job) (ver int64, _ error) {
 	//       You'll need to find the right place where to put the function `adjustColumnInfoInDropColumn`.
 	//       Also you'll need to take a corner case about the default value.
 	//       (Think about how the not null property and default value will influence the `Drop Column` operation.
-	// drop Column 只要修改 table 的元信息，把 table 元信息中对应的要删除的 column 删除。
+	// drop Column 只要修改 table 的元信息，把 table 元信息中对应的要删除的 column 删除。（发散到oracle，drop column同样不会释放列中数据所占空间）
 	// drop Column 不会删除原有 table 数据行中的对应的 Column 数据，在 decode 一行数据时，会根据 table 的元信息来 decode
 	switch colInfo.State {
-	case model.StatePublic:
+	case model.StatePublic: // drop column时column Info的状态变化过程为：public -> write only -> delete only -> reorganization -> absent
 		// To be filled
-		// adjustColumnInfoInDropColumn(tblInfo, offset)
+		// public -> write only
+		job.SchemaState = model.StateWriteOnly
+		colInfo.State = model.StateWriteOnly
 		ver, err = updateVersionAndTableInfoWithCheck(t, job, tblInfo, originalState != colInfo.State)
 	case model.StateWriteOnly:
 		// To be filled
+		// write only -> delete only
+		job.SchemaState = model.StateDeleteOnly
+		colInfo.State = model.StateDeleteOnly
 		ver, err = updateVersionAndTableInfo(t, job, tblInfo, originalState != colInfo.State)
 	case model.StateDeleteOnly:
 		// To be filled
+		// delete only -> reorganization
+		// 此时所有节点不会存在处于public状态的情况，而至少已进入到 write only状态
+		job.SchemaState = model.StateDeleteReorganization
+		colInfo.State = model.StateDeleteReorganization
 		ver, err = updateVersionAndTableInfo(t, job, tblInfo, originalState != colInfo.State)
 	case model.StateDeleteReorganization:
 		// reorganization -> absent
+		// 此时没有处于write only的节点，所有节点或者处于delete only，或者被下线
 		// All reorganization jobs are done, drop this column.
+		// 执行adjustColumnInfoInDropColumn，tableInfo中所有column的offset被更新为删除一个column后的最新len，并且将要删除的column放到tblInfo.Columns数组最后
+		adjustColumnInfoInDropColumn(tblInfo, colInfo.Offset)
 		tblInfo.Columns = tblInfo.Columns[:len(tblInfo.Columns)-1]
 		colInfo.State = model.StateNone
 		ver, err = updateVersionAndTableInfo(t, job, tblInfo, originalState != colInfo.State)
