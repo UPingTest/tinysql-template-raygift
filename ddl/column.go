@@ -181,22 +181,27 @@ func onAddColumn(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, err error)
 		columnInfo.State = model.StateDeleteOnly
 		ver, err = updateVersionAndTableInfoWithCheck(t, job, tblInfo, originalState != columnInfo.State)
 	case model.StateDeleteOnly:
+		// 进入delete only状态 ，列只对删除可见
+		// tips：如果新加的column允许null，则无需考虑integrity anomalies，只用delete-only来保证不会产生孤儿数据的异象（orphan anomalies）即可，public可与delete-only兼容，可省略write only和reorg状态
 		// delete only -> write only
-		// 进入delete only状态后列只允许删除
 		job.SchemaState = model.StateWriteOnly
 		columnInfo.State = model.StateWriteOnly
+		//当前列的状态不是write only时，更新schemaid+1，并将tableinfo更新
 		ver, err = updateVersionAndTableInfo(t, job, tblInfo, originalState != columnInfo.State)
 	case model.StateWriteOnly:
 		// write only -> reorganization
 		job.SchemaState = model.StateWriteReorganization
 		columnInfo.State = model.StateWriteReorganization
+		//当前列的状态不是write reorg时，更新schemaid+1，并将tableinfo更新
 		ver, err = updateVersionAndTableInfo(t, job, tblInfo, originalState != columnInfo.State)
 	case model.StateWriteReorganization:
 		// reorganization -> public
-		// 此时没有处于delete only状态的节点，节点或者处于write only，或者下线，此时可执行添加列的操作
+		// 此时没有处于delete only状态的节点
+		// 更新已存在数据的column信息
 		// Adjust table column offset.
 		adjustColumnInfoInAddColumn(tblInfo, offset)
 		columnInfo.State = model.StatePublic
+		//当前列的状态不是public时，更新schemaid+1，并将tableinfo更新
 		ver, err = updateVersionAndTableInfo(t, job, tblInfo, originalState != columnInfo.State)
 		if err != nil {
 			return ver, errors.Trace(err)
@@ -216,20 +221,31 @@ func onDropColumn(t *meta.Meta, job *model.Job) (ver int64, _ error) {
 	if err != nil {
 		return ver, errors.Trace(err)
 	}
-
 	originalState := colInfo.State
 	// TODO: fill the codes of the case `StatePublic`, `StateWriteOnly` and `StateDeleteOnly`.
 	//       You'll need to find the right place where to put the function `adjustColumnInfoInDropColumn`.
 	//       Also you'll need to take a corner case about the default value.
 	//       (Think about how the not null property and default value will influence the `Drop Column` operation.
-	// drop Column 只要修改 table 的元信息，把 table 元信息中对应的要删除的 column 删除。（发散到oracle，drop column同样不会释放列中数据所占空间）
+
+	// drop Column 只要修改 table 的元信息，把 table 元信息中对应的要删除的 column 删除
 	// drop Column 不会删除原有 table 数据行中的对应的 Column 数据，在 decode 一行数据时，会根据 table 的元信息来 decode
 	switch colInfo.State {
-	case model.StatePublic: // drop column时column Info的状态变化过程为：public -> write only -> delete only -> reorganization -> absent
+	case model.StatePublic:
+		// drop column时column Info的状态变化过程为：public -> write only -> delete only ->delete reorganization -> absent
 		// To be filled
 		// public -> write only
+		// 执行adjustColumnInfoInDropColumn，tableInfo中所有column的offset被更新为删除一个column后的最新len，并且将要删除的column放到tblInfo.Columns数组最后
 		job.SchemaState = model.StateWriteOnly
 		colInfo.State = model.StateWriteOnly
+		adjustColumnInfoInDropColumn(tblInfo, colInfo.Offset)
+		// 当要删除的column存在非空约束，但未设置默认值时，为了在执行select时使得public状态与delete-only状态兼容，需填充非空默认值（这个问题卡住很久，目前好像没有相关文档直接提到此细节）
+		if colInfo.DefaultValue == nil && mysql.HasNotNullFlag(colInfo.Flag) {
+			colInfo.DefaultValue, err = generateOriginDefaultValue(colInfo)
+			if err != nil {
+				return ver, errors.Trace(err)
+			}
+		}
+
 		ver, err = updateVersionAndTableInfoWithCheck(t, job, tblInfo, originalState != colInfo.State)
 	case model.StateWriteOnly:
 		// To be filled
@@ -248,8 +264,6 @@ func onDropColumn(t *meta.Meta, job *model.Job) (ver int64, _ error) {
 		// reorganization -> absent
 		// 此时没有处于write only的节点，所有节点或者处于delete only，或者被下线
 		// All reorganization jobs are done, drop this column.
-		// 执行adjustColumnInfoInDropColumn，tableInfo中所有column的offset被更新为删除一个column后的最新len，并且将要删除的column放到tblInfo.Columns数组最后
-		adjustColumnInfoInDropColumn(tblInfo, colInfo.Offset)
 		tblInfo.Columns = tblInfo.Columns[:len(tblInfo.Columns)-1]
 		colInfo.State = model.StateNone
 		ver, err = updateVersionAndTableInfo(t, job, tblInfo, originalState != colInfo.State)
