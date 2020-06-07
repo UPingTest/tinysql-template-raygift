@@ -238,7 +238,7 @@ func onDropColumn(t *meta.Meta, job *model.Job) (ver int64, _ error) {
 		job.SchemaState = model.StateWriteOnly
 		colInfo.State = model.StateWriteOnly
 		adjustColumnInfoInDropColumn(tblInfo, colInfo.Offset)
-		// 当要删除的column存在非空约束，但未设置默认值时，为了在执行select时使得public状态与delete-only状态兼容，需填充非空默认值（这个问题卡住很久，目前好像没有相关文档直接提到此细节）
+		// 当要删除的column存在非空约束，但未设置默认值时，为了在执行select时使得public状态与delete-only状态兼容，需填充非空默认值（这个问题花了点时间理解，目前好像没有相关文档直接提到此细节）
 		if colInfo.DefaultValue == nil && mysql.HasNotNullFlag(colInfo.Flag) {
 			colInfo.DefaultValue, err = generateOriginDefaultValue(colInfo)
 			if err != nil {
