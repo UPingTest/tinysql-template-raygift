@@ -55,23 +55,47 @@ func TablePrefix() []byte {
 
 // appendTableRecordPrefix appends table record prefix  "t[tableID]_r".
 func appendTableRecordPrefix(buf []byte, tableID int64) []byte {
-	buf = append(buf, tablePrefix...)
+	buf = append(buf, tablePrefix...) // buf = []byte{'t'}
 	buf = codec.EncodeInt(buf, tableID)
+	// buf = []byte{'t',8,0,0,0,0,0,0,1}
 	buf = append(buf, recordPrefixSep...)
+	// buf = []byte{'t',8,0,0,0,0,0,0,1,'_','r'}
 	return buf
 }
 
 // EncodeRowKeyWithHandle encodes the table id, row handle into a kv.Key
 func EncodeRowKeyWithHandle(tableID int64, handle int64) kv.Key {
-	buf := make([]byte, 0, RecordRowKeyLen)
-	buf = appendTableRecordPrefix(buf, tableID)
-	buf = codec.EncodeInt(buf, handle)
-	return buf
+	buf := make([]byte, 0, RecordRowKeyLen)     // RecordRowKeyLen = []byte{'t'}.length + tableID.length + []byte{"_r"}.length + rowID.length = 1 + 8 + 2 + 8 = 19
+	buf = appendTableRecordPrefix(buf, tableID) // 将tableprefix【't'】、tableid、recordprefixSep【‘_r'】加入buf，执行后得到 buf = []byte{'t', 8, 0, 0, 0, 0, 0, 0, 1, '_', 'r'}
+	buf = codec.EncodeInt(buf, handle)          // 将handle加入buf，执行后得到 buf = []byte{'t', 8, 0, 0, 0, 0, 0, 0, 1, '_', 'r', 8, 0, 0, 0, 0, 0, 0, 2}
+	// 字符't'的ascii为【01110011】
+	// 二进制输出 buf 可以得到 [1110100 1000 0 0 0 0 0 0 1 1011111 1110010 1000 0 0 0 0 0 0 10]
+	return buf // 将buf中存储的byte转为16进制字符串，比如't'的二进制【01110011】转为16进制字符串为 74，得到 buf -> 7408000000000000015f720800000000000002
 }
 
 // DecodeRecordKey decodes the key and gets the tableID, handle.
 func DecodeRecordKey(key kv.Key) (tableID int64, handle int64, err error) {
 	/* Your code here */
+	// 判断是否有tableprefix字符't'
+	if !key.HasPrefix(tablePrefix) {
+		return 0, 0, errInvalidKey.GenWithStack("invalid key - %v", key)
+	}
+	key = key[tablePrefixLength:]
+	key, tableID, err = codec.DecodeInt(key)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// 判断是否有分割下划线和rowprefix字符'_r"
+	if !key.HasPrefix(recordPrefixSep) {
+		return 0, 0, errInvalidKey.GenWithStack("invalid key - %v", key)
+	}
+	key = key[recordPrefixSepLength:]
+	key, handle, err = codec.DecodeInt(key)
+	if err != nil {
+		return 0, 0, err
+	}
+
 	return
 }
 

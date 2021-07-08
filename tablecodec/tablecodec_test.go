@@ -47,6 +47,7 @@ func (s *testTableCodecSuite) TestTableCodec(c *C) {
 	c.Assert(h, Equals, int64(2))
 
 	key = EncodeRowKeyWithHandle(1, 2)
+	// c.Errorf("Type: %T Value: %v\n", key, key)
 	h, err = DecodeRowKey(key)
 	c.Assert(err, IsNil)
 	c.Assert(h, Equals, int64(2))
@@ -101,6 +102,7 @@ func (s *testTableCodecSuite) TestIndexKey(c *C) {
 	tableID := int64(4)
 	indexID := int64(5)
 	indexKey := EncodeIndexSeekKey(tableID, indexID, []byte{})
+	c.Error(indexKey)
 	tTableID, tIndexID, isRecordKey, err := DecodeKeyHead(indexKey)
 	c.Assert(err, IsNil)
 	c.Assert(tTableID, Equals, tableID)
